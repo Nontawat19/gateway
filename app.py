@@ -21,6 +21,20 @@ def load_schools():
             return json.load(f)
     return {}
 
+def get_tailscale_ip():
+    """ตรวจหาเลข IP ของ Tailscale (100.x.x.x) จากเครื่อง"""
+    try:
+        import socket
+        import subprocess
+        # ลองใช้ hostname -I เพื่อความรวดเร็วบน Linux
+        ips = subprocess.check_output(['hostname', '-I']).decode().split()
+        for ip in ips:
+            if ip.startswith('100.'):
+                return ip
+        return None
+    except:
+        return None
+
 def save_schools(schools):
     with open(SCHOOLS_FILE, "w") as f:
         json.dump(schools, f)
@@ -93,7 +107,11 @@ async def startup_event():
 @app.get("/config", response_class=HTMLResponse)
 async def get_config(request: Request):
     schools = load_schools()
-    host = request.headers.get("host")
+    ts_ip = get_tailscale_ip()
+    # ถ้าเจอ Tailscale IP ให้ใช้ IP นั้น ถ้าไม่เจอให้ใช้ Host ปกติ
+    base_url = ts_ip if ts_ip else request.headers.get("host").split(':')[0]
+    port = request.scope['server'][1]
+    
     school_list_data = []
     for code, meta in schools.items():
         s_data = SCHOOL_CACHE.get(code)
@@ -103,7 +121,7 @@ async def get_config(request: Request):
             "name": s_data["name"] if is_ready else "กำลังโหลด...",
             "is_ready": is_ready,
             "added_at": meta.get('added_at', 'Unknown')[:10],
-            "webhook_url": f"http://{host}/webhook/attendance/{code}"
+            "webhook_url": f"http://{base_url}:{port}/webhook/attendance/{code}"
         })
 
     schools_json = json.dumps(school_list_data)

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+attendance.db
+schools_config.json
+*.json
+!requirements.txt
+.DS_Store
+.env

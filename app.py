@@ -8,8 +8,17 @@ from datetime import datetime, timedelta
 import asyncio
 import json
 import os
+import traceback
 
 app = FastAPI(title="BMG Attendance Hub")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print("="*50)
+    print(f"❌ GLOBAL ERROR: {exc}")
+    traceback.print_exc()
+    print("="*50)
+    return HTMLResponse(content=f"Internal Server Error: {exc}", status_code=500)
 
 # --- Configuration & Caching ---
 SCHOOLS_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")

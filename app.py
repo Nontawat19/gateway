@@ -285,6 +285,12 @@ async def get_config(request: Request):
             window.copyToClipboard = function(text) {{
                 navigator.clipboard.writeText(text).then(() => {{ alert('คัดลอก URL เรียบร้อย!'); }});
             }};
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const msg = urlParams.get('msg');
+            const error = urlParams.get('error');
+            if (msg) alert(msg);
+            if (error) alert('❌ Error: ' + error);
 
             renderTable();
         </script>
@@ -294,15 +300,29 @@ async def get_config(request: Request):
 
 @app.post("/config/add")
 async def add_school(school_code: str = Form(...)):
+    # 1. ตรวจสอบที่ Firebase ก่อนว่ามีโรงเรียนนี้จริงไหม
+    school_id, school_name = fb.get_school_info_by_code(school_code)
+    
+    if not school_id:
+        # ถ้าไม่พบโรงเรียน ไม่ต้องบันทึก และส่ง error กลับไป
+        return RedirectResponse(url="/config?error=ไม่พบรหัสโรงเรียนนี้ในระบบ Firebase", status_code=303)
+
     schools = load_schools()
     if school_code not in schools:
         schools[school_code] = {"added_at": str(datetime.now())}
         save_schools(schools)
-        # ลองโหลดเข้า Cache ทันที
-        await refresh_school_cache(school_code)
-    return RedirectResponse(url="/config", status_code=303)
+        # โหลดเข้า Cache ทันที
+        SCHOOL_CACHE[school_code] = {
+            "id": school_id,
+            "name": school_name,
+            "config": fb.fetch_school_config(school_id),
+            "expiry": datetime.now() + timedelta(days=30)
+        }
+        return RedirectResponse(url="/config?msg=เพิ่มโรงเรียนสำเร็จ", status_code=303)
+    
+    return RedirectResponse(url="/config?msg=โรงเรียนนี้ถูกเพิ่มไว้แล้ว", status_code=303)
 
-@app.get("/config/delete/{{school_code}}")
+@app.get("/config/delete/{school_code}")
 async def delete_school(school_code: str):
     schools = load_schools()
     if school_code in schools:
@@ -310,6 +330,7 @@ async def delete_school(school_code: str):
         save_schools(schools)
         if school_code in SCHOOL_CACHE:
             del SCHOOL_CACHE[school_code]
+        return RedirectResponse(url="/config?msg=ลบโรงเรียนเรียบร้อยแล้ว", status_code=303)
     return RedirectResponse(url="/config", status_code=303)
 
 # --- Attendance Webhook ---

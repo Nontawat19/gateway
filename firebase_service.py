@@ -4,16 +4,22 @@ import os
 from datetime import datetime
 from logic import get_summary_keys, get_period_status_mapping
 
-# Initialize Firebase
-# ตรวจสอบชื่อไฟล์ JSON ให้ตรงกับที่คุณดาวน์โหลดมา
-cred_path = os.path.join(os.path.dirname(__file__), "epp5online-firebase-adminsdk-fbsvc-68d55f8d1b.json")
-if os.path.exists(cred_path):
-    cred = credentials.Certificate(cred_path)
-    firebase_admin.initialize_app(cred)
-else:
-    print(f"⚠️ Warning: ไม่พบไฟล์ {cred_path}")
+# ==========================================
+# Initialize Firebase 
+# ==========================================
+# ดึง Path ของโฟลเดอร์ปัจจุบัน และระบุชื่อไฟล์ JSON ให้ตรงกับที่อยู่ในเครื่อง
+cred_path = os.path.join(os.path.dirname(__file__), "epp5online-firebase-adminsdk-fbsvc-f8e9e138dd.json")
+
+if not firebase_admin._apps:
+    if os.path.exists(cred_path):
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+    else:
+        # หากหาไฟล์ไม่เจอ จะแจ้งเตือนเพื่อให้ตรวจสอบชื่อไฟล์อีกครั้ง
+        raise FileNotFoundError(f"❌ ไม่พบไฟล์ Key สำหรับ Firebase ที่: {cred_path}")
 
 db = firestore.client()
+# ==========================================
 
 def fetch_school_config(school_id):
     doc_ref = db.collection("school-settings").document(school_id)
@@ -86,7 +92,6 @@ def sync_to_firebase(school_id, user_info, status, action_type, dt):
     new_key = get_period_status_mapping(status)
     
     if new_key:
-        # We don't have oldStatus here since it's a new scan
         updates = {new_key: firestore.Increment(1)}
         
         # Weekly, Monthly, Yearly, Semester

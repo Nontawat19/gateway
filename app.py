@@ -361,7 +361,7 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
         # ลองรีเฟรชถ้าไม่มีในแคช
         success = await refresh_school_cache(school_code)
         if not success:
-            return {{"status": "error", "message": f"School {{school_code}} not found"}}
+            return {"status": "error", "message": f"School {school_code} not found"}
         school_data = SCHOOL_CACHE[school_code]
 
     data = await request.json()
@@ -375,7 +375,7 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
         if "matched_dossier" in fe and fe["matched_dossier"]:
             user_id = fe["matched_dossier"].get("external_id")
     
-    if not user_id: return {{"status": "error", "message": "No user_id found"}}
+    if not user_id: return {"status": "error", "message": "No user_id found"}
 
     # 3. ดึงข้อมูลผู้ใช้ (เช็ค SQLite Cache ก่อน)
     school_id = school_data["id"]
@@ -385,24 +385,24 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
         user_info = fb.fetch_user_info(school_id, user_id)
         if user_info:
             db_local.update_user_cache(user_id, school_id, user_info)
-            print(f"📥 Cached new user: {{user_id}}")
+            print(f"📥 Cached new user: {user_id}")
     
     if not user_info:
-        return {{"status": "error", "message": "User not found"}}
+        return {"status": "error", "message": "User not found"}
 
     # 4. คำนวณสถานะ
     action_type, status = logic.calculate_status(now, school_data["config"], user_info['type'])
     if not action_type:
-        return {{"status": "ignored", "message": "Outside windows"}}
+        return {"status": "ignored", "message": "Outside windows"}
 
     # 5. เช็คซ้ำใน SQLite
     if db_local.check_existing_record(user_id, today, action_type):
-        return {{"status": "skipped", "message": "Duplicate scan ignored"}}
+        return {"skipped": "ignored", "message": "Duplicate scan ignored"}
 
     # 6. ส่งเข้าคิวประมวลผลเบื้องหลัง
     background_tasks.add_task(process_attendance_hub, school_id, user_info, now, action_type, status)
     
-    return {{"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}}
+    return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
     user_id = user_info['studentId'] if user_info['type'] == 'student' else user_info['teacherId']
@@ -425,7 +425,7 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
             db_local.update_sync_status(record_id, 1)
             # [TODO] ส่งแจ้งเตือน LINE
     except Exception as e:
-        print(f"❌ Hub Sync Failed: {{e}}")
+        print(f"❌ Hub Sync Failed: {e}")
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

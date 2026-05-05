@@ -111,6 +111,16 @@ async def startup_event():
     asyncio.create_task(retry_loop())
     asyncio.create_task(midnight_cleanup_loop())
 
+def serialize_firestore_data(data):
+    """แปลงข้อมูลพิเศษจาก Firestore (เช่น Timestamp) ให้เป็นข้อมูลพื้นฐานที่ JSON รองรับ"""
+    if isinstance(data, dict):
+        return {k: serialize_firestore_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [serialize_firestore_data(i) for i in data]
+    elif hasattr(data, 'isoformat'): # สำหรับ datetime และ Timestamp
+        return data.isoformat()
+    return data
+
 # --- Dashboard Routes ---
 
 @app.get("/config", response_class=HTMLResponse)
@@ -393,8 +403,11 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     if not user_info:
         user_info = fb.fetch_user_info(school_id, user_id)
         if user_info:
-            db_local.update_user_cache(user_id, school_id, user_info)
+            # แปลงข้อมูลให้เป็น JSON-friendly ก่อนเก็บลง SQLite
+            serializable_user = serialize_firestore_data(user_info)
+            db_local.update_user_cache(user_id, school_id, serializable_user)
             print(f"📥 Cached new user: {user_id}")
+            user_info = serializable_user
     
     if not user_info:
         return {"status": "error", "message": "User not found"}

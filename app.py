@@ -353,7 +353,7 @@ async def delete_school(school_code: str):
 
 # --- Attendance Webhook ---
 
-@app.post("/webhook/attendance/{{school_code}}")
+@app.post("/webhook/attendance/{school_code}")
 async def handle_attendance(school_code: str, request: Request, background_tasks: BackgroundTasks):
     # 1. ตรวจสอบโรงเรียน
     school_data = SCHOOL_CACHE.get(school_code)

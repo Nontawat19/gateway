@@ -22,54 +22,35 @@ db = firestore.client()
 # ==========================================
 
 def fetch_school_config(school_id):
+    """ดึงข้อมูลการตั้งค่าโรงเรียน (Attendance & LINE)"""
     doc_ref = db.collection("school-settings").document(school_id)
-    doc = doc_ref.get()
-    if doc.exists:
-        data = doc.to_dict()
+    doc_snap = doc_ref.get()
+    if doc_snap.exists:
+        data = doc_snap.to_dict()
         config = data.get("attendanceConfig", {})
-        # รวมค่า LINE Settings และรหัสโรงเรียนเข้าไปด้วย
+        # รวมค่า LINE Settings เข้าไปด้วย
         config['lineSettings'] = data.get('lineSettings', {})
-        config['schoolCode'] = data.get('schoolCode')
-        config['schoolName'] = data.get('schoolName') or data.get('name')
         return config
     return {}
 
 def get_teacher_line_config(school_id, class_id):
-    """ค้นหาข้อมูล LINE ของครูประจำชั้นที่ดูแลห้องนั้นๆ"""
-    if not class_id: return None
-    print(f"🔍 Looking for teacher of class: {class_id}")
-    
+    """ค้นหาข้อมูล LINE Config ของครูประจำชั้น"""
+    if not class_id:
+        return None
+        
     teachers_ref = db.collection("school-settings").document(school_id).collection("teachers")
-    # ค้นหาครูที่มี homeroomGrade ตรงกับห้องของนักเรียน
-    query = teachers_ref.where("homeroomGrade", "==", class_id).limit(1).stream()
+    # ค้นหาครูที่เป็นครูประจำชั้นของห้องนี้
+    query = teachers_ref.where("homeroomGrade", "==", str(class_id))\
+                       .where("isHomeroomTeacher", "==", True)\
+                       .limit(1).stream()
+                       
     for doc in query:
         data = doc.to_dict()
         if data.get('lineChannelAccessToken'):
-            print(f"✅ Found teacher token for {class_id}")
             return {
                 'lineChannelAccessToken': data.get('lineChannelAccessToken'),
                 'enableNotification': data.get('enableNotification', True)
             }
-    print(f"⚠️ No teacher token found for class {class_id}")
-    return None
-
-def check_leave_status(school_id, user_id_internal, date_str):
-    """ตรวจสอบว่านักเรียนมีใบลาที่อนุมัติแล้วในวันนี้หรือไม่"""
-    leave_ref = db.collection("school-settings").document(school_id)\
-                  .collection("students").document(user_id_internal)\
-                  .collection("leave_requests")
-    
-    query = leave_ref.where("status", "==", "approved").stream()
-    for doc in query:
-        data = doc.to_dict()
-        start = data.get('startDate')
-        end = data.get('endDate')
-        
-        if hasattr(start, 'isoformat'): start = start.strftime("%Y-%m-%d")
-        if hasattr(end, 'isoformat'): end = end.strftime("%Y-%m-%d")
-        
-        if start and end and start <= date_str <= end:
-            return data.get('type', 'ลา')
     return None
 
 def get_school_info_by_code(school_code):

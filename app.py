@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 import firebase_service as fb
 import database as db_local
 import logic
+import notifier
 from datetime import datetime, timedelta
 import asyncio
 import json
@@ -417,12 +418,6 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     if not action_type:
         return {"status": "ignored", "message": "Outside windows"}
 
-    # 4.1 ตรวจสอบการลา (ถ้าเป็นนักเรียน)
-    if user_info['type'] == 'student':
-        leave_type = fb.check_leave_status(school_id, user_info['id'], today)
-        if leave_type:
-            status = f"ลา ({leave_type})"
-
     # 5. เช็คซ้ำใน SQLite
     if db_local.check_existing_record(user_id, today, action_type):
         return {"skipped": "ignored", "message": "Duplicate scan ignored"}
@@ -432,12 +427,8 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     
     return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
-import notifier
-
-TEACHER_CACHE = {} # { "school_id_class_id": { "config": {}, "expiry": datetime } }
-
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
-    user_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('id')
+    user_id = user_info['studentId'] if user_info['type'] == 'student' else user_info['teacherId']
     
     # 1. บันทึก SQLite
     record_id = db_local.insert_record(
@@ -456,47 +447,24 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
         if success:
             db_local.update_sync_status(record_id, 1)
             
-            # 3. ส่งแจ้งเตือน LINE
-            line_config = None
-            if user_info['type'] == 'student':
-                class_id = user_info.get('classLevel') or user_info.get('grade')
-                cache_key = f"{school_id}_{class_id}"
-                
-                # ตรวจสอบ Cache ครูประจำชั้น
-                cached = TEACHER_CACHE.get(cache_key)
-                if cached and cached['expiry'] > datetime.now():
-                    line_config = cached['config']
-                else:
-                    line_config = fb.get_teacher_line_config(school_id, class_id)
-                    TEACHER_CACHE[cache_key] = {
-                        "config": line_config,
-                        "expiry": datetime.now() + timedelta(hours=24)
-                    }
+            # --- ส่งแจ้งเตือน LINE ---
+            # 1. ลองดึงจากครูประจำชั้น
+            class_id = user_info.get("classLevel") or user_info.get("grade")
+            line_config = fb.get_teacher_line_config(school_id, class_id)
             
-            # Fallback ไปใช้ Config โรงเรียน (หากหาครูไม่เจอ หรือเป็นครูสแกนเอง)
+            # 2. ถ้าไม่มีครูประจำชั้น ให้ลองดึงจากโรงเรียน (Fallback)
             if not line_config:
-                school_data = SCHOOL_CACHE.get(school_id) or {"config": fb.fetch_school_config(school_id)}
-                # ลองดึงจาก lineSettings.school
-                line_config = school_data.get("config", {}).get("lineSettings", {}).get("school")
-                
-                if not line_config:
-                    print(f"⚠️ No LINE config found for School {school_id} or Teacher")
-                else:
-                    print(f"🏢 Using School Global LINE Token")
+                school_code = next((code for code, data in SCHOOL_CACHE.items() if data['id'] == school_id), None)
+                if school_code:
+                    line_config = SCHOOL_CACHE[school_code].get("config", {}).get("lineSettings", {}).get("school")
             
-            if line_config and line_config.get('lineChannelAccessToken'):
-                notifier.send_line_attendance_notification(
-                    user_info, 
-                    status, 
-                    dt.strftime("%H:%M"), 
-                    line_config
-                )
+            if line_config:
+                time_str = dt.strftime("%H:%M")
+                notifier.send_line_attendance_notification(user_info, status, time_str, line_config)
             else:
-                print(f"❌ Aborting LINE notification: Token is missing for {user_info.get('name')}")
+                print(f"⚠️ No LINE config found for {user_info.get('name')} (Class: {class_id})")
     except Exception as e:
-        print(f"❌ Hub Sync/Notify Failed: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Hub Sync Failed: {e}")
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

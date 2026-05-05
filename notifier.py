@@ -142,7 +142,7 @@ def send_line_attendance_notification(user_info, status, time_str, line_config):
                             "layout": "vertical",
                             "margin": "md",
                             "contents": [
-                                {"type": "text", "text": f"{user_info.get('name', 'นักเรียน')} {status}แล้วเวลา {time_str} น.", "size": "sm", "color": "#166534" if status == 'มา' else "#92400e", "weight": "bold", "wrap": True},
+                                {"type": "text", "text": f"{name} {status}แล้วเวลา {time_str} น.", "size": "sm", "color": "#166534" if status == 'มา' else "#92400e", "weight": "bold", "wrap": True},
                                 {"type": "text", "text": "ทำรายการสำเร็จ" if status == 'มา' else "กรุณามาให้ทันเวลาในครั้งถัดไป", "size": "xs", "color": "#166534" if status == 'มา' else "#92400e", "margin": "xs"}
                             ]
                         }

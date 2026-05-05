@@ -448,23 +448,32 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
             db_local.update_sync_status(record_id, 1)
             
             # --- ส่งแจ้งเตือน LINE ---
+            print(f"📣 Preparing LINE notification for: {user_info.get('name')}")
+            
             # 1. ลองดึงจากครูประจำชั้น
-            class_id = user_info.get("classLevel") or user_info.get("grade")
+            class_id = user_info.get("classLevel") or user_info.get("grade") or user_info.get("homeroomGrade")
             line_config = fb.get_teacher_line_config(school_id, class_id)
+            if line_config:
+                print(f"👤 Found Teacher LINE config for class {class_id}")
             
             # 2. ถ้าไม่มีครูประจำชั้น ให้ลองดึงจากโรงเรียน (Fallback)
             if not line_config:
                 school_code = next((code for code, data in SCHOOL_CACHE.items() if data['id'] == school_id), None)
                 if school_code:
-                    line_config = SCHOOL_CACHE[school_code].get("config", {}).get("lineSettings", {}).get("school")
+                    school_data = SCHOOL_CACHE[school_code]
+                    line_config = school_data.get("config", {}).get("lineSettings", {}).get("school")
+                    if line_config:
+                        print(f"🏫 Fallback to School LINE config for {school_code}")
             
             if line_config:
                 time_str = dt.strftime("%H:%M")
                 notifier.send_line_attendance_notification(user_info, status, time_str, line_config)
             else:
-                print(f"⚠️ No LINE config found for {user_info.get('name')} (Class: {class_id})")
+                print(f"⚠️ NO LINE CONFIG FOUND: User: {user_info.get('name')}, Class: {class_id}")
+                print(f"🔍 Debug Info - SchoolID: {school_id}")
     except Exception as e:
-        print(f"❌ Hub Sync Failed: {e}")
+        print(f"❌ Hub Sync Failed or Notification Error: {e}")
+        traceback.print_exc()
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

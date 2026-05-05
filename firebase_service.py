@@ -26,8 +26,27 @@ def fetch_school_config(school_id):
     doc = doc_ref.get()
     if doc.exists:
         data = doc.to_dict()
-        return data.get("attendanceConfig", {})
+        config = data.get("attendanceConfig", {})
+        # รวมค่า LINE Config กลางเข้าไปด้วย
+        config['lineSettings'] = data.get('lineSettings', {})
+        return config
     return {}
+
+def get_teacher_line_config(school_id, class_id):
+    """ค้นหาข้อมูล LINE ของครูประจำชั้นที่ดูแลห้องนั้นๆ"""
+    if not class_id: return None
+    
+    teachers_ref = db.collection("school-settings").document(school_id).collection("teachers")
+    # ค้นหาครูที่มี homeroomGrade ตรงกับห้องของนักเรียน
+    query = teachers_ref.where("homeroomGrade", "==", class_id).limit(1).stream()
+    for doc in query:
+        data = doc.to_dict()
+        if data.get('lineChannelAccessToken'):
+            return {
+                'lineChannelAccessToken': data.get('lineChannelAccessToken'),
+                'enableNotification': data.get('enableNotification', True)
+            }
+    return None
 
 def get_school_info_by_code(school_code):
     """ค้นหา School UID และชื่อโรงเรียน จากรหัสโรงเรียน (schoolCode)"""
@@ -37,25 +56,57 @@ def get_school_info_by_code(school_code):
         return doc.id, data.get("schoolName") or data.get("name") or "ไม่ระบุชื่อโรงเรียน"
     return None, None
 
+def check_leave_status(school_id, user_id_internal, date_str):
+    """ตรวจสอบว่านักเรียนมีใบลาที่อนุมัติแล้วในวันนี้หรือไม่"""
+    leave_ref = db.collection("school-settings").document(school_id)\
+                  .collection("students").document(user_id_internal)\
+                  .collection("leave_requests")
+    
+    # ค้นหาใบลาที่สถานะเป็น 'approved'
+    query = leave_ref.where("status", "==", "approved").stream()
+    for doc in query:
+        data = doc.to_dict()
+        start = data.get('startDate')
+        end = data.get('endDate')
+        
+        # แปลงเป็น string เพื่อเปรียบเทียบ
+        if hasattr(start, 'isoformat'): start = start.strftime("%Y-%m-%d")
+        if hasattr(end, 'isoformat'): end = end.strftime("%Y-%m-%d")
+        
+        if start and end and start <= date_str <= end:
+            return data.get('type', 'ลา')
+    return None
+
 def fetch_user_info(school_id, user_id):
-    # Search students
+    print(f"🔍 Searching for user {user_id} in school {school_id}...")
+    
+    # เตรียมค่าสำหรับค้นหา (ลองทั้ง string และ int)
+    search_values = [str(user_id)]
+    try:
+        search_values.append(int(user_id))
+    except:
+        pass
+    
+    # 1. ค้นหาใน students
     students_ref = db.collection("school-settings").document(school_id).collection("students")
-    query = students_ref.where("studentId", "==", user_id).limit(1).stream()
-    for doc in query:
-        data = doc.to_dict()
-        data['id'] = doc.id
-        data['type'] = 'student'
-        return data
-        
-    # Search teachers
+    for val in search_values:
+        query = students_ref.where("studentId", "==", val).limit(1).stream()
+        for doc in query:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            data['type'] = 'student'
+            return data
+            
+    # 2. ค้นหาใน teachers
     teachers_ref = db.collection("school-settings").document(school_id).collection("teachers")
-    query = teachers_ref.where("teacherId", "==", user_id).limit(1).stream()
-    for doc in query:
-        data = doc.to_dict()
-        data['id'] = doc.id
-        data['type'] = 'teacher'
-        return data
-        
+    for val in search_values:
+        query = teachers_ref.where("teacherId", "==", val).limit(1).stream()
+        for doc in query:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            data['type'] = 'teacher'
+            return data
+            
     return None
 
 def sync_to_firebase(school_id, user_info, status, action_type, dt):

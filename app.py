@@ -23,6 +23,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # --- Configuration & Caching ---
 SCHOOLS_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")
 SCHOOL_CACHE = {} # { "school_code": { "id": "UID", "name": "Name", "config": {}, "expiry": datetime } }
+TEACHER_CACHE = {} # { "school_id_class_id": { "config": {}, "expiry": datetime } }
 
 def load_schools():
     if os.path.exists(SCHOOLS_FILE):
@@ -417,6 +418,12 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     if not action_type:
         return {"status": "ignored", "message": "Outside windows"}
 
+    # 4.1 ตรวจสอบการลา (ถ้าเป็นนักเรียน)
+    if user_info['type'] == 'student':
+        leave_type = fb.check_leave_status(school_id, user_info['id'], today)
+        if leave_type:
+            status = f"ลา ({leave_type})"
+
     # 5. เช็คซ้ำใน SQLite
     if db_local.check_existing_record(user_id, today, action_type):
         return {"skipped": "ignored", "message": "Duplicate scan ignored"}
@@ -426,8 +433,10 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     
     return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
+import notifier
+
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
-    user_id = user_info['studentId'] if user_info['type'] == 'student' else user_info['teacherId']
+    user_id = user_info.get('studentId') or user_info.get('teacherId')
     
     # 1. บันทึก SQLite
     record_id = db_local.insert_record(
@@ -445,9 +454,45 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
         success = fb.sync_to_firebase(school_id, user_info, status, action_type, dt)
         if success:
             db_local.update_sync_status(record_id, 1)
-            # [TODO] ส่งแจ้งเตือน LINE
+            
+            # 3. ส่งแจ้งเตือน LINE
+            # ค้นหา Config ของครูประจำชั้น (ถ้าเป็นนักเรียน)
+            line_config = None
+            if user_info['type'] == 'student':
+                class_id = user_info.get('classLevel') or user_info.get('grade')
+                cache_key = f"{school_id}_{class_id}"
+                
+                # ตรวจสอบ Cache (มีอายุ 24 ชม.)
+                cached = TEACHER_CACHE.get(cache_key)
+                if cached and cached['expiry'] > datetime.now():
+                    line_config = cached['config']
+                else:
+                    line_config = fb.get_teacher_line_config(school_id, class_id)
+                    TEACHER_CACHE[cache_key] = {
+                        "config": line_config,
+                        "expiry": datetime.now() + timedelta(hours=24)
+                    }
+            
+            # ถ้าหาของครูไม่เจอ หรือเป็นครูสแกน ให้ใช้ Config กลางของโรงเรียน
+            if not line_config:
+                school_data = SCHOOL_CACHE.get(school_id) or {"config": fb.fetch_school_config(school_id)}
+                # ลองดูที่ lineSettings.school ก่อน (ตามโครงสร้างใน LineOAManagementPage)
+                line_config = school_data.get("config", {}).get("lineSettings", {}).get("school")
+                
+                # Fallback เผื่อเก็บไว้ที่อื่น
+                if not line_config:
+                    line_config = school_data.get("config", {}).get("schoolLineConfig")
+            
+            if line_config:
+                notifier.send_line_attendance_notification(
+                    user_info, 
+                    status, 
+                    dt.strftime("%H:%M"), 
+                    line_config
+                )
     except Exception as e:
-        print(f"❌ Hub Sync Failed: {e}")
+        print(f"❌ Hub Sync/Notify Failed: {e}")
+        traceback.print_exc()
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

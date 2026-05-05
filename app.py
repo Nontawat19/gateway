@@ -427,7 +427,7 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     
     return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
-async def process_attendance_hub(school_id, user_info, dt, action_type, status):
+def process_attendance_hub(school_id, user_info, dt, action_type, status):
     try:
         # ดึง ID ให้ปลอดภัยขึ้น (กันพัง)
         user_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('id', 'unknown')
@@ -450,13 +450,13 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
             
             # --- ส่งแจ้งเตือน LINE ---
             name_for_log = user_info.get('name') or user_info.get('firstName', 'Unknown')
-            print(f"📣 Preparing LINE notification for: {name_for_log}")
+            print(f"📣 Preparing LINE notification for: {name_for_log}", flush=True)
             
             # 1. ลองดึงจากครูประจำชั้น
             class_id = user_info.get("classLevel") or user_info.get("grade") or user_info.get("homeroomGrade")
             line_config = fb.get_teacher_line_config(school_id, class_id)
             if line_config:
-                print(f"👤 Found Teacher LINE config for class {class_id}")
+                print(f"👤 Found Teacher LINE config for class {class_id}", flush=True)
             
             # 2. ถ้าไม่มีครูประจำชั้น ให้ลองดึงจากโรงเรียน (Fallback)
             if not line_config:
@@ -465,19 +465,19 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
                     school_data = SCHOOL_CACHE[school_code]
                     line_config = school_data.get("config", {}).get("lineSettings", {}).get("school")
                     if line_config:
-                        print(f"🏫 Fallback to School LINE config for {school_code}")
+                        print(f"🏫 Fallback to School LINE config for {school_code}", flush=True)
             
             if line_config:
                 time_str = dt.strftime("%H:%M")
                 notifier.send_line_attendance_notification(user_info, status, time_str, line_config)
             else:
-                print(f"⚠️ NO LINE CONFIG FOUND: User: {name_for_log}, Class: {class_id}")
+                print(f"⚠️ NO LINE CONFIG FOUND: User: {name_for_log}, Class: {class_id}", flush=True)
                 
     except Exception as e:
-        print("="*50)
-        print(f"❌ BACKGROUND PROCESS ERROR: {e}")
+        print("="*50, flush=True)
+        print(f"❌ BACKGROUND PROCESS ERROR: {e}", flush=True)
         traceback.print_exc()
-        print("="*50)
+        print("="*50, flush=True)
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

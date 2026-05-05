@@ -6,7 +6,7 @@ import json
 DB_PATH = os.path.join(os.path.dirname(__file__), "attendance.db")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS local_attendance (
@@ -35,7 +35,7 @@ def init_db():
 
 def get_cached_user(user_id):
     """ดึงข้อมูลผู้ใช้จาก SQLite (ถ้ามี)"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute("SELECT user_data FROM users_cache WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -46,7 +46,7 @@ def get_cached_user(user_id):
 
 def update_user_cache(user_id, school_id, user_data):
     """บันทึก/อัปเดตข้อมูลผู้ใช้ลงใน SQLite"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT OR REPLACE INTO users_cache (user_id, school_id, user_data, updated_at)
@@ -56,7 +56,7 @@ def update_user_cache(user_id, school_id, user_data):
     conn.close()
 
 def check_existing_record(user_id, scan_date, action_type):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id FROM local_attendance 
@@ -67,7 +67,7 @@ def check_existing_record(user_id, scan_date, action_type):
     return record is not None
 
 def insert_record(school_id, user_id, user_type, action_type, status, scan_date, scan_time):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO local_attendance (school_id, user_id, user_type, action_type, status, scan_date, scan_time)
@@ -80,7 +80,7 @@ def insert_record(school_id, user_id, user_type, action_type, status, scan_date,
 
 def update_sync_status(record_id, status=1):
     """อัปเดตสถานะการ Sync ข้อมูล"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     cursor.execute("UPDATE local_attendance SET is_synced = ? WHERE id = ?", (status, record_id))
     conn.commit()
@@ -88,7 +88,7 @@ def update_sync_status(record_id, status=1):
 
 def get_unsynced_records():
     """ดึงรายการที่ยังไม่ได้ Sync"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM local_attendance WHERE is_synced = 0")
@@ -98,7 +98,7 @@ def get_unsynced_records():
 
 def clear_old_records():
     """ล้างข้อมูลที่ส่งสำเร็จแล้วของวันก่อนๆ เพื่อประหยัดพื้นที่"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
     today = datetime.now().strftime("%Y-%m-%d")
     

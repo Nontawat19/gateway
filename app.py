@@ -428,27 +428,29 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
     return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
-    user_id = user_info['studentId'] if user_info['type'] == 'student' else user_info['teacherId']
-    
-    # 1. บันทึก SQLite
-    record_id = db_local.insert_record(
-        school_id=school_id,
-        user_id=user_id,
-        user_type=user_info['type'],
-        action_type=action_type,
-        status=status,
-        scan_date=dt.strftime("%Y-%m-%d"),
-        scan_time=dt.strftime("%H:%M:%S")
-    )
-    
-    # 2. บันทึก Firebase
     try:
+        # ดึง ID ให้ปลอดภัยขึ้น (กันพัง)
+        user_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('id', 'unknown')
+        
+        # 1. บันทึก SQLite
+        record_id = db_local.insert_record(
+            school_id=school_id,
+            user_id=user_id,
+            user_type=user_info.get('type', 'unknown'),
+            action_type=action_type,
+            status=status,
+            scan_date=dt.strftime("%Y-%m-%d"),
+            scan_time=dt.strftime("%H:%M:%S")
+        )
+        
+        # 2. บันทึก Firebase
         success = fb.sync_to_firebase(school_id, user_info, status, action_type, dt)
         if success:
             db_local.update_sync_status(record_id, 1)
             
             # --- ส่งแจ้งเตือน LINE ---
-            print(f"📣 Preparing LINE notification for: {user_info.get('name')}")
+            name_for_log = user_info.get('name') or user_info.get('firstName', 'Unknown')
+            print(f"📣 Preparing LINE notification for: {name_for_log}")
             
             # 1. ลองดึงจากครูประจำชั้น
             class_id = user_info.get("classLevel") or user_info.get("grade") or user_info.get("homeroomGrade")
@@ -469,11 +471,13 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
                 time_str = dt.strftime("%H:%M")
                 notifier.send_line_attendance_notification(user_info, status, time_str, line_config)
             else:
-                print(f"⚠️ NO LINE CONFIG FOUND: User: {user_info.get('name')}, Class: {class_id}")
-                print(f"🔍 Debug Info - SchoolID: {school_id}")
+                print(f"⚠️ NO LINE CONFIG FOUND: User: {name_for_log}, Class: {class_id}")
+                
     except Exception as e:
-        print(f"❌ Hub Sync Failed or Notification Error: {e}")
+        print("="*50)
+        print(f"❌ BACKGROUND PROCESS ERROR: {e}")
         traceback.print_exc()
+        print("="*50)
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

@@ -23,7 +23,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 # --- Configuration & Caching ---
 SCHOOLS_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")
 SCHOOL_CACHE = {} # { "school_code": { "id": "UID", "name": "Name", "config": {}, "expiry": datetime } }
-TEACHER_CACHE = {} # { "school_id_class_id": { "config": {}, "expiry": datetime } }
 
 def load_schools():
     if os.path.exists(SCHOOLS_FILE):
@@ -435,8 +434,10 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
 
 import notifier
 
+TEACHER_CACHE = {} # { "school_id_class_id": { "config": {}, "expiry": datetime } }
+
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
-    user_id = user_info.get('studentId') or user_info.get('teacherId')
+    user_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('id')
     
     # 1. บันทึก SQLite
     record_id = db_local.insert_record(
@@ -456,13 +457,12 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
             db_local.update_sync_status(record_id, 1)
             
             # 3. ส่งแจ้งเตือน LINE
-            # ค้นหา Config ของครูประจำชั้น (ถ้าเป็นนักเรียน)
             line_config = None
             if user_info['type'] == 'student':
                 class_id = user_info.get('classLevel') or user_info.get('grade')
                 cache_key = f"{school_id}_{class_id}"
                 
-                # ตรวจสอบ Cache (มีอายุ 24 ชม.)
+                # ตรวจสอบ Cache ครูประจำชั้น
                 cached = TEACHER_CACHE.get(cache_key)
                 if cached and cached['expiry'] > datetime.now():
                     line_config = cached['config']
@@ -473,25 +473,29 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
                         "expiry": datetime.now() + timedelta(hours=24)
                     }
             
-            # ถ้าหาของครูไม่เจอ หรือเป็นครูสแกน ให้ใช้ Config กลางของโรงเรียน
+            # Fallback ไปใช้ Config โรงเรียน (หากหาครูไม่เจอ หรือเป็นครูสแกนเอง)
             if not line_config:
                 school_data = SCHOOL_CACHE.get(school_id) or {"config": fb.fetch_school_config(school_id)}
-                # ลองดูที่ lineSettings.school ก่อน (ตามโครงสร้างใน LineOAManagementPage)
+                # ลองดึงจาก lineSettings.school
                 line_config = school_data.get("config", {}).get("lineSettings", {}).get("school")
                 
-                # Fallback เผื่อเก็บไว้ที่อื่น
                 if not line_config:
-                    line_config = school_data.get("config", {}).get("schoolLineConfig")
+                    print(f"⚠️ No LINE config found for School {school_id} or Teacher")
+                else:
+                    print(f"🏢 Using School Global LINE Token")
             
-            if line_config:
+            if line_config and line_config.get('lineChannelAccessToken'):
                 notifier.send_line_attendance_notification(
                     user_info, 
                     status, 
                     dt.strftime("%H:%M"), 
                     line_config
                 )
+            else:
+                print(f"❌ Aborting LINE notification: Token is missing for {user_info.get('name')}")
     except Exception as e:
         print(f"❌ Hub Sync/Notify Failed: {e}")
+        import traceback
         traceback.print_exc()
 
 @app.get("/", response_class=RedirectResponse)

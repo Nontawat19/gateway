@@ -78,12 +78,22 @@ def insert_record(school_id, user_id, user_type, action_type, status, scan_date,
     conn.close()
     return last_id
 
-def update_sync_status(record_id, status=1):
+def clear_old_records():
+    """ล้างข้อมูลที่ส่งสำเร็จแล้วของวันก่อนๆ เพื่อประหยัดพื้นที่"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE local_attendance SET is_synced = ? WHERE id = ?", (status, record_id))
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # ลบรายการที่ sync สำเร็จแล้ว และไม่ใช่ของวันนี้
+    cursor.execute("DELETE FROM local_attendance WHERE is_synced = 1 AND scan_date < ?", (today,))
+    deleted_count = cursor.rowcount
+    
+    # ล้าง Cache ผู้ใช้ที่ไม่ได้อัปเดตเกิน 30 วัน (เผื่อกรณีมีการย้ายโรงเรียน/ลาออก)
+    cursor.execute("DELETE FROM users_cache WHERE updated_at < date('now', '-30 days')")
+    
     conn.commit()
     conn.close()
+    return deleted_count
 
 def get_unsynced_records():
     conn = sqlite3.connect(DB_PATH)

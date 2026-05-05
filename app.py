@@ -1,57 +1,32 @@
+import uvicorn
+from fastapi import FastAPI, Request, BackgroundTasks, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+import firebase_service as fb
+import database as db_local
+import logic
+from datetime import datetime, timedelta
 import asyncio
 import json
 import os
-from fastapi import FastAPI, Request, BackgroundTasks, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
-import uvicorn
-from datetime import datetime, timedelta
-import database as db_local
-import firebase_service as fb
-import logic
 
-app = FastAPI()
+app = FastAPI(title="BMG Attendance Hub")
 
-# ไฟล์สำหรับเก็บรายการโรงเรียนทั้งหมด
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")
-
-# Global Cache Variables
-# SCHOOL_CACHE = { "school_code": { "id": "...", "config": "...", "expiry": "..." } }
-SCHOOL_CACHE = {}
-LAST_CLEANUP_DATE = None
+# --- Configuration & Caching ---
+SCHOOLS_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")
+SCHOOL_CACHE = {} # { "school_code": { "id": "UID", "name": "Name", "config": {}, "expiry": datetime } }
 
 def load_schools():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
+    if os.path.exists(SCHOOLS_FILE):
+        with open(SCHOOLS_FILE, "r") as f:
+            return json.load(f)
     return {}
 
-def save_schools(schools: dict):
-    with open(CONFIG_FILE, "w") as f:
+def save_schools(schools):
+    with open(SCHOOLS_FILE, "w") as f:
         json.dump(schools, f)
 
-@app.on_event("startup")
-async def startup_event():
-    global LAST_CLEANUP_DATE, SCHOOL_CACHE
-    db_local.init_db()
-    
-    today = datetime.now().strftime("%Y-%m-%d")
-    db_local.clear_old_records(today)
-    LAST_CLEANUP_DATE = today
-    
-    # โหลดรายการโรงเรียนและเตรียม Cache
-    schools = load_schools()
-    for code in schools:
-        print(f"📡 Pre-loading school: {code}")
-        await refresh_school_cache(code)
-    
-    print(f"🚀 Multi-school Hub Started ({len(schools)} schools loaded)")
-    asyncio.create_task(retry_loop())
-
 async def refresh_school_cache(school_code):
-    global SCHOOL_CACHE
+    """โหลด/รีเฟรชค่า Config และข้อมูลโรงเรียนจาก Firebase"""
     school_id, school_name = fb.get_school_info_by_code(school_code)
     if school_id:
         config = fb.fetch_school_config(school_id)
@@ -63,6 +38,8 @@ async def refresh_school_cache(school_code):
         }
         return True
     return False
+
+# --- Background Tasks ---
 
 async def retry_loop():
     """ระบบตรวจหาข้อมูลที่ส่งไม่สำเร็จและส่งซ้ำทุกๆ 5 นาที"""
@@ -85,26 +62,50 @@ async def retry_loop():
         except Exception as e:
             print(f"❌ Retry Loop Error: {e}")
 
-# --- [หน้าเว็บจัดการโรงเรียน - ULTIMATE DASHBOARD UI] ---
+async def midnight_cleanup_loop():
+    """ระบบล้างข้อมูลอัตโนมัติเวลาเที่ยงคืน (เฉพาะรายการที่ Sync แล้ว)"""
+    while True:
+        now = datetime.now()
+        # เช็คทุก 1 ชั่วโมง ถ้าอยู่ในช่วงเที่ยงคืน ให้ล้างข้อมูลเก่า
+        if now.hour == 0:
+            count = db_local.clear_old_records()
+            if count > 0:
+                print(f"🧹 Midnight Cleanup: Removed {count} synced records from previous days.")
+        
+        await asyncio.sleep(3600)
+
+@app.on_event("startup")
+async def startup_event():
+    db_local.init_db()
+    # ล้างข้อมูลทันทีที่เปิดเครื่อง (เผื่อเปิดหลังเที่ยงคืน)
+    db_local.clear_old_records()
+    
+    # โหลดแคชเริ่มต้น
+    schools = load_schools()
+    for code in schools:
+        await refresh_school_cache(code)
+        
+    asyncio.create_task(retry_loop())
+    asyncio.create_task(midnight_cleanup_loop())
+
+# --- Dashboard Routes ---
+
 @app.get("/config", response_class=HTMLResponse)
 async def get_config(request: Request):
     schools = load_schools()
     host = request.headers.get("host")
-    
-    # เตรียมข้อมูลสำหรับส่งให้ JavaScript จัดการต่อที่ฝั่ง Client
     school_list_data = []
     for code, meta in schools.items():
-        school_data = SCHOOL_CACHE.get(code)
-        is_ready = school_data is not None
+        s_data = SCHOOL_CACHE.get(code)
+        is_ready = s_data is not None
         school_list_data.append({
             "code": code,
-            "name": school_data["name"] if is_ready else "กำลังโหลดข้อมูล...",
+            "name": s_data["name"] if is_ready else "กำลังโหลด...",
             "is_ready": is_ready,
             "added_at": meta.get('added_at', 'Unknown')[:10],
             "webhook_url": f"http://{host}/webhook/attendance/{code}"
         })
 
-    # แปลงเป็น JSON string
     schools_json = json.dumps(school_list_data)
 
     return f"""
@@ -113,52 +114,51 @@ async def get_config(request: Request):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>BMG Hub | Control Center</title>
+        <title>BMG Attendance Hub</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&family=Anuphan:wght@300;400;600&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Anuphan:wght@300;400;600&display=swap" rel="stylesheet">
         <style>
             :root {{
-                --bg-body: #0a0c10;
-                --bg-card: #161b22;
-                --text-main: #e6edf3;
-                --accent: linear-gradient(135deg, #3fb950 0%, #238636 100%);
+                --accent-color: #00d2ff;
+                --bg-dark: #0d1117;
+                --card-bg: rgba(22, 27, 34, 0.8);
             }}
-            [data-bs-theme="light"] {{
-                --bg-body: #f6f8fa;
-                --bg-card: #ffffff;
-                --text-main: #1f2328;
-                --accent: linear-gradient(135deg, #2da44e 0%, #1a7f37 100%);
+            body {{ font-family: 'Anuphan', sans-serif; background: var(--bg-dark); color: #c9d1d9; }}
+            .glass-card {{
+                background: var(--card-bg);
+                backdrop-filter: blur(10px);
+                border: 1px solid #30363d;
+                border-radius: 16px;
+                padding: 24px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
             }}
-            body {{ background-color: var(--bg-body); color: var(--text-main); font-family: 'Anuphan', 'Outfit', sans-serif; transition: all 0.3s ease; }}
-            .glass-card {{ background: var(--bg-card); border: 1px solid rgba(128,128,128,0.2); border-radius: 20px; padding: 25px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); }}
-            .navbar {{ background: var(--bg-card); border-bottom: 1px solid rgba(128,128,128,0.2); }}
-            .btn-accent {{ background: var(--accent); color: white; border: none; font-weight: 600; border-radius: 10px; }}
-            .btn-accent:hover {{ opacity: 0.9; color: white; transform: translateY(-1px); }}
-            .search-input {{ background: rgba(128,128,128,0.1); border: 1px solid rgba(128,128,128,0.3); color: var(--text-main); border-radius: 10px; }}
-            .search-input:focus {{ background: rgba(128,128,128,0.15); color: var(--text-main); border-color: #2da44e; box-shadow: none; }}
-            .pagination .page-link {{ background: var(--bg-card); border-color: rgba(128,128,128,0.3); color: var(--text-main); }}
-            .pagination .active .page-link {{ background: #2da44e; border-color: #2da44e; }}
-            .table {{ color: var(--text-main); }}
-            .badge-online {{ background: rgba(63, 185, 80, 0.15); color: #3fb950; border: 1px solid rgba(63, 185, 80, 0.3); }}
-            .badge-offline {{ background: rgba(248, 81, 73, 0.15); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.3); }}
+            .btn-accent {{ background: var(--accent-color); color: #000; font-weight: 600; border-radius: 8px; border: none; transition: 0.3s; }}
+            .btn-accent:hover {{ background: #33e0ff; transform: translateY(-2px); }}
+            .search-input {{ background: #161b22; border: 1px solid #30363d; color: #fff; border-radius: 12px; }}
+            .search-input:focus {{ background: #1c2128; border-color: var(--accent-color); color: #fff; box-shadow: none; }}
+            .badge-online {{ background: rgba(35, 134, 54, 0.2); color: #3fb950; border: 1px solid rgba(63, 185, 80, 0.4); }}
+            .badge-offline {{ background: rgba(248, 81, 73, 0.2); color: #f85149; border: 1px solid rgba(248, 81, 73, 0.4); }}
             .copy-btn {{ cursor: pointer; transition: 0.2s; }}
-            .copy-btn:hover {{ color: #2da44e; }}
+            .copy-btn:hover {{ color: var(--accent-color); }}
+            .extra-small {{ font-size: 0.75rem; }}
+            .pagination .page-link {{ background: #161b22; border-color: #30363d; color: #c9d1d9; }}
+            .pagination .page-item.active .page-link {{ background: var(--accent-color); border-color: var(--accent-color); color: #000; }}
+            .pagination .page-item.disabled .page-link {{ background: #0d1117; color: #484f58; }}
         </style>
     </head>
     <body>
-        <nav class="navbar mb-4">
-            <div class="container d-flex justify-content-between align-items-center py-2">
-                <h4 class="fw-bold mb-0">🚀 BMG Attendance Hub</h4>
-                <div class="d-flex gap-3 align-items-center">
-                    <input type="text" id="searchInput" class="form-control search-input" placeholder="🔍 ค้นหาชื่อหรือรหัสโรงเรียน..." style="width: 280px;">
-                    <button class="btn btn-outline-secondary btn-sm" id="themeToggle">🌓 สลับโหมด</button>
+        <nav class="navbar border-bottom border-secondary-subtle mb-4 py-3">
+            <div class="container">
+                <span class="navbar-brand fw-bold text-white">🚀 BMG Hub</span>
+                <div class="d-flex align-items-center gap-3">
+                    <input type="text" id="searchInput" class="form-control form-control-sm search-input" placeholder="ค้นหาโรงเรียน..." style="width: 250px;">
+                    <button class="btn btn-sm btn-outline-light" id="themeToggle">🌓 Mode</button>
                 </div>
             </div>
         </nav>
 
         <div class="container">
             <div class="row g-4">
-                <!-- Add Section -->
                 <div class="col-lg-12">
                     <div class="glass-card mb-4">
                         <form action="/config/add" method="post" class="row g-3 align-items-end">
@@ -173,7 +173,6 @@ async def get_config(request: Request):
                     </div>
                 </div>
 
-                <!-- List Section -->
                 <div class="col-lg-12">
                     <div class="glass-card">
                         <div class="table-responsive">
@@ -186,17 +185,11 @@ async def get_config(request: Request):
                                         <th class="text-end">จัดการ</th>
                                     </tr>
                                 </thead>
-                                <tbody id="schoolTableBody">
-                                    <!-- JS will inject rows here -->
-                                </tbody>
+                                <tbody id="schoolTableBody"></tbody>
                             </table>
                         </div>
-                        
-                        <!-- Pagination -->
                         <nav class="mt-4 d-flex justify-content-center">
-                            <ul class="pagination pagination-sm" id="pagination">
-                                <!-- JS will inject pagination here -->
-                            </ul>
+                            <ul class="pagination pagination-sm" id="pagination"></ul>
                         </nav>
                     </div>
                 </div>
@@ -209,11 +202,8 @@ async def get_config(request: Request):
             let currentPage = 1;
             const itemsPerPage = 20;
 
-            // --- Theme Logic ---
             const themeToggle = document.getElementById('themeToggle');
             const html = document.documentElement;
-            
-            // Load saved theme
             const savedTheme = localStorage.getItem('theme') || 'dark';
             html.setAttribute('data-bs-theme', savedTheme);
 
@@ -224,19 +214,16 @@ async def get_config(request: Request):
                 localStorage.setItem('theme', next);
             }});
 
-            // --- Search Logic ---
             const searchInput = document.getElementById('searchInput');
             searchInput.addEventListener('input', (e) => {{
                 const term = e.target.value.toLowerCase();
                 filteredSchools = allSchools.filter(s => 
-                    s.name.toLowerCase().includes(term) || 
-                    s.code.toLowerCase().includes(term)
+                    s.name.toLowerCase().includes(term) || s.code.toLowerCase().includes(term)
                 );
                 currentPage = 1;
                 renderTable();
             }});
 
-            // --- Render Logic ---
             function renderTable() {{
                 const start = (currentPage - 1) * itemsPerPage;
                 const end = start + itemsPerPage;
@@ -269,24 +256,18 @@ async def get_config(request: Request):
                 if (pageItems.length === 0) {{
                     tableBody.innerHTML = '<tr><td colspan="4" class="text-center py-5 text-muted">ไม่พบข้อมูลโรงเรียน</td></tr>';
                 }}
-
                 renderPagination();
             }}
 
             function renderPagination() {{
                 const totalPages = Math.ceil(filteredSchools.length / itemsPerPage);
                 const pagination = document.getElementById('pagination');
-                if (totalPages <= 1) {{
-                    pagination.innerHTML = '';
-                    return;
-                }}
+                if (totalPages <= 1) {{ pagination.innerHTML = ''; return; }}
 
                 let html = '';
-                // First & Prev
                 html += `<li class="page-item ${{currentPage === 1 ? 'disabled' : ''}}"><a class="page-link" href="#" onclick="changePage(1)">หน้าแรก</a></li>`;
                 html += `<li class="page-item ${{currentPage === 1 ? 'disabled' : ''}}"><a class="page-link" href="#" onclick="changePage(${{currentPage - 1}})">ย้อนกลับ</a></li>`;
 
-                // Numbers
                 for (let i = 1; i <= totalPages; i++) {{
                     if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {{
                         html += `<li class="page-item ${{currentPage === i ? 'active' : ''}}"><a class="page-link" href="#" onclick="changePage(${{i}})">${{i}}</a></li>`;
@@ -295,25 +276,16 @@ async def get_config(request: Request):
                     }}
                 }}
 
-                // Next & Last
                 html += `<li class="page-item ${{currentPage === totalPages ? 'disabled' : ''}}"><a class="page-link" href="#" onclick="changePage(${{currentPage + 1}})">ถัดไป</a></li>`;
                 html += `<li class="page-item ${{currentPage === totalPages ? 'disabled' : ''}}"><a class="page-link" href="#" onclick="changePage(${{totalPages}})">หน้าสุดท้าย</a></li>`;
-
                 pagination.innerHTML = html;
             }}
 
-            window.changePage = function(page) {{
-                currentPage = page;
-                renderTable();
-            }};
-
+            window.changePage = function(page) {{ currentPage = page; renderTable(); }};
             window.copyToClipboard = function(text) {{
-                navigator.clipboard.writeText(text).then(() => {{
-                    alert('คัดลอก URL เรียบร้อย!');
-                }});
+                navigator.clipboard.writeText(text).then(() => {{ alert('คัดลอก URL เรียบร้อย!'); }});
             }};
 
-            // Initial Render
             renderTable();
         </script>
     </body>
@@ -324,13 +296,13 @@ async def get_config(request: Request):
 async def add_school(school_code: str = Form(...)):
     schools = load_schools()
     if school_code not in schools:
-        success = await refresh_school_cache(school_code)
-        if success:
-            schools[school_code] = {"added_at": datetime.now().isoformat()}
-            save_schools(schools)
+        schools[school_code] = {"added_at": str(datetime.now())}
+        save_schools(schools)
+        # ลองโหลดเข้า Cache ทันที
+        await refresh_school_cache(school_code)
     return RedirectResponse(url="/config", status_code=303)
 
-@app.get("/config/delete/{school_code}")
+@app.get("/config/delete/{{school_code}}")
 async def delete_school(school_code: str):
     schools = load_schools()
     if school_code in schools:
@@ -340,73 +312,63 @@ async def delete_school(school_code: str):
             del SCHOOL_CACHE[school_code]
     return RedirectResponse(url="/config", status_code=303)
 
-# --- [Webhook Endpoint สำหรับหลายโรงเรียน] ---
-@app.post("/webhook/attendance/{school_code}")
+# --- Attendance Webhook ---
+
+@app.post("/webhook/attendance/{{school_code}}")
 async def handle_attendance(school_code: str, request: Request, background_tasks: BackgroundTasks):
-    global SCHOOL_CACHE, LAST_CLEANUP_DATE
-    
-    # 1. ตรวจสอบว่ารหัสโรงเรียนนี้มีในระบบไหม
+    # 1. ตรวจสอบโรงเรียน
     school_data = SCHOOL_CACHE.get(school_code)
     if not school_data:
-        # พยายามโหลดเข้า Cache ถ้ามีในลิสต์แต่ยังไม่มีใน Cache
-        schools = load_schools()
-        if school_code in schools:
-            success = await refresh_school_cache(school_code)
-            if success: school_data = SCHOOL_CACHE[school_code]
-            
-    if not school_data:
-        return {"status": "error", "message": f"School {school_code} not found or not configured"}
+        # ลองรีเฟรชถ้าไม่มีในแคช
+        success = await refresh_school_cache(school_code)
+        if not success:
+            return {{"status": "error", "message": f"School {{school_code}} not found"}}
+        school_data = SCHOOL_CACHE[school_code]
 
     data = await request.json()
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
 
-    # 2. แกะข้อมูล ID บุคคลจาก FindFace
+    # 2. แกะ ID จาก FindFace
     user_id = data.get("matched_card") or data.get("person_id")
     if not user_id and "face_event" in data:
         fe = data["face_event"]
         if "matched_dossier" in fe and fe["matched_dossier"]:
             user_id = fe["matched_dossier"].get("external_id")
     
-    if not user_id: return {"status": "error", "message": "No user_id found"}
+    if not user_id: return {{"status": "error", "message": "No user_id found"}}
 
-    # 3. ตรวจสอบ Cache Expiry ของ Config
-    if now > school_data["expiry"]:
-        await refresh_school_cache(school_code)
-        school_data = SCHOOL_CACHE[school_code]
-
-    # 4. ดึงข้อมูลผู้ใช้ (เช็ค SQLite ก่อนเพื่อประหยัดเงิน)
+    # 3. ดึงข้อมูลผู้ใช้ (เช็ค SQLite Cache ก่อน)
     school_id = school_data["id"]
     user_info = db_local.get_cached_user(user_id)
     
     if not user_info:
-        # ถ้าในเครื่องไม่มีข้อมูล ค่อยไปดึงจาก Firebase 1 ครั้ง
         user_info = fb.fetch_user_info(school_id, user_id)
         if user_info:
-            # ดึงมาได้แล้ว เซฟลง SQLite ไว้ใช้ในครั้งถัดไปทันที
             db_local.update_user_cache(user_id, school_id, user_info)
-            print(f"📥 Cached new user: {user_id}")
+            print(f"📥 Cached new user: {{user_id}}")
     
     if not user_info:
-        return {"status": "error", "message": "User not found in local or cloud"}
+        return {{"status": "error", "message": "User not found"}}
 
+    # 4. คำนวณสถานะ
     action_type, status = logic.calculate_status(now, school_data["config"], user_info['type'])
     if not action_type:
-        return {"status": "ignored", "message": "Outside windows"}
+        return {{"status": "ignored", "message": "Outside windows"}}
 
     # 5. เช็คซ้ำใน SQLite
     if db_local.check_existing_record(user_id, today, action_type):
-        return {"status": "skipped", "message": "Duplicate scan ignored"}
+        return {{"status": "skipped", "message": "Duplicate scan ignored"}}
 
-    # 6. ส่งเข้าคิว
+    # 6. ส่งเข้าคิวประมวลผลเบื้องหลัง
     background_tasks.add_task(process_attendance_hub, school_id, user_info, now, action_type, status)
     
-    return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
+    return {{"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}}
 
 async def process_attendance_hub(school_id, user_info, dt, action_type, status):
     user_id = user_info['studentId'] if user_info['type'] == 'student' else user_info['teacherId']
     
-    # 1. บันทึก SQLite (ระบุ school_id ด้วย)
+    # 1. บันทึก SQLite
     record_id = db_local.insert_record(
         school_id=school_id,
         user_id=user_id,
@@ -424,15 +386,11 @@ async def process_attendance_hub(school_id, user_info, dt, action_type, status):
             db_local.update_sync_status(record_id, 1)
             # [TODO] ส่งแจ้งเตือน LINE
     except Exception as e:
-        print(f"❌ Hub Sync Failed: {e}")
+        print(f"❌ Hub Sync Failed: {{e}}")
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():
-    return RedirectResponse(url="/config")
-
-@app.get("/favicon.ico", include_in_schema=False)
-async def favicon():
-    return HTMLResponse(content="", status_code=204)
+    return "/config"
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5050)

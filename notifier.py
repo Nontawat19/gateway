@@ -16,12 +16,19 @@ def send_line_attendance_notification(user_info, status, time_str, line_config):
         print("❌ LINE Notification disabled or missing token")
         return False
 
-    stats = user_info.get('attendanceStats', {'present': 0, 'late': 0, 'leave': 0, 'absent': 0})
-    score = user_info.get('behaviorScore', 100)
-    name = user_info.get('name', 'ไม่ระบุชื่อ')
-    display_id = user_info.get('displayId', '-')
-    grade = user_info.get('grade', '-')
-    profile_url = user_info.get('profileImageUrl') or "https://ui-avatars.com/api/?name=Student&background=random"
+    # ปรับจูนการดึงชื่อ (รองรับทั้ง name หรือ firstName + lastName)
+    name = user_info.get('name')
+    if not name:
+        title = user_info.get('title', '')
+        fname = user_info.get('firstName', '')
+        lname = user_info.get('lastName', '')
+        name = f"{title}{fname} {lname}".strip() or "ไม่ระบุชื่อ"
+        
+    # ปรับจูนการดึงรหัสและระดับชั้น
+    display_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('displayId', '-')
+    grade = user_info.get('classLevel') or user_info.get('grade') or user_info.get('homeroomGrade') or "-"
+    
+    profile_url = user_info.get('profileImageUrl') or "https://ui-avatars.com/api/?name=User&background=random"
     parent_ids = user_info.get('parentLineUserIds', [])
 
     # สร้าง Chart URL (Doughnut Chart) ผ่าน QuickChart.io

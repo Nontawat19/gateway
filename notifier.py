@@ -32,6 +32,25 @@ def send_line_attendance_notification(user_info, status, time_str, line_config, 
         room = user_info.get('room', '')
         grade = f"{class_level}/{room}" if room else class_level
         raw_profile = user_info.get('profileImageUrl', '')
+        
+        # ถ้ามี school_id ให้ดึง profileImageUrl จาก Firebase ใหม่ (cache อาจเก่า)
+        if school_id and user_info.get('id'):
+            try:
+                import firebase_service as fb
+                user_type = user_info.get('type', 'student')
+                col_name = 'students' if user_type == 'student' else 'teachers'
+                doc_ref = fb.db.collection("school-settings").document(school_id)\
+                    .collection(col_name).document(user_info['id'])
+                doc_snap = doc_ref.get()
+                if doc_snap.exists:
+                    fresh_data = doc_snap.to_dict()
+                    fresh_profile = fresh_data.get('profileImageUrl', '')
+                    if fresh_profile:
+                        raw_profile = fresh_profile
+                        print(f"📸 Fresh profile URL loaded for {name}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Could not fetch fresh profile: {e}", flush=True)
+        
         # LINE ต้องการ HTTPS URL ที่เข้าถึงได้สาธารณะ
         if raw_profile and raw_profile.startswith('https://'):
             profile_url = raw_profile
@@ -39,6 +58,8 @@ def send_line_attendance_notification(user_info, status, time_str, line_config, 
             # Fallback: สร้าง avatar จากชื่อ
             safe_name = urllib.parse.quote(name)
             profile_url = f"https://ui-avatars.com/api/?name={safe_name}&background=0D8ABC&color=fff&size=200"
+        
+        print(f"🖼️ Profile URL: {profile_url[:80]}...", flush=True)
         parent_ids = user_info.get('parentLineUserIds', [])
 
         # 2. ดึงข้อมูลสรุปภาคเรียนจาก Semestersummary (ข้อมูลจริงจาก Firebase)

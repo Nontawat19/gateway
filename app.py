@@ -60,10 +60,18 @@ async def refresh_school_cache(school_code):
             "id": school_id,
             "name": school_name,
             "config": config,
-            "expiry": datetime.now() + timedelta(days=30)
+            "expiry": datetime.now() + timedelta(hours=6)
         }
+        print(f"🔄 Config refreshed for {school_code} ({school_name}) - next refresh at {SCHOOL_CACHE[school_code]['expiry'].strftime('%H:%M')}")
         return True
     return False
+
+def is_cache_expired(school_code):
+    """ตรวจสอบว่า cache หมดอายุหรือยัง"""
+    school_data = SCHOOL_CACHE.get(school_code)
+    if not school_data:
+        return True
+    return datetime.now() > school_data.get("expiry", datetime.min)
 
 # --- Background Tasks ---
 
@@ -100,6 +108,18 @@ async def midnight_cleanup_loop():
         
         await asyncio.sleep(3600)
 
+async def config_refresh_loop():
+    """รีเฟรช Config จาก Firebase ทุกๆ 6 ชั่วโมง เพื่อให้ค่าเวลาที่แอดมินเปลี่ยนถูกอัปเดตอัตโนมัติ"""
+    while True:
+        await asyncio.sleep(21600)  # 6 ชั่วโมง
+        try:
+            schools = load_schools()
+            for code in schools:
+                await refresh_school_cache(code)
+            print(f"✅ Auto-refreshed config for {len(schools)} schools at {datetime.now().strftime('%H:%M')}")
+        except Exception as e:
+            print(f"❌ Config Refresh Loop Error: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     db_local.init_db()
@@ -113,6 +133,7 @@ async def startup_event():
         
     asyncio.create_task(retry_loop())
     asyncio.create_task(midnight_cleanup_loop())
+    asyncio.create_task(config_refresh_loop())
 
 def serialize_firestore_data(data):
     """แปลงข้อมูลพิเศษจาก Firestore (เช่น Timestamp) ให้เป็นข้อมูลพื้นฐานที่ JSON รองรับ"""
@@ -374,14 +395,36 @@ async def delete_school(school_code: str):
         return RedirectResponse(url="/config?msg=ลบโรงเรียนเรียบร้อยแล้ว", status_code=303)
     return RedirectResponse(url="/config", status_code=303)
 
+@app.get("/config/refresh/{school_code}")
+async def refresh_school_config_endpoint(school_code: str):
+    """API สำหรับ force refresh config ของโรงเรียน (ใช้หลังจากเปลี่ยนเวลาจากหน้าเว็บ)"""
+    success = await refresh_school_cache(school_code)
+    if success:
+        config = SCHOOL_CACHE[school_code]["config"]
+        return {
+            "status": "success",
+            "message": f"Config refreshed for {school_code}",
+            "config": {
+                "studentCheckinStart": config.get("studentCheckinStart"),
+                "studentCheckinEnd": config.get("studentCheckinEnd"),
+                "studentLateTime": config.get("studentLateTime"),
+                "studentCheckoutStart": config.get("studentCheckoutStart"),
+                "studentCheckoutEnd": config.get("studentCheckoutEnd"),
+                "studentCheckoutTime": config.get("studentCheckoutTime"),
+                "teacherLateTime": config.get("teacherLateTime"),
+                "teacherCheckoutTime": config.get("teacherCheckoutTime"),
+            }
+        }
+    return {"status": "error", "message": f"School {school_code} not found"}
+
 # --- Attendance Webhook ---
 
 @app.post("/webhook/attendance/{school_code}")
 async def handle_attendance(school_code: str, request: Request, background_tasks: BackgroundTasks):
-    # 1. ตรวจสอบโรงเรียน
+    # 1. ตรวจสอบโรงเรียน + เช็ค cache หมดอายุ
     school_data = SCHOOL_CACHE.get(school_code)
-    if not school_data:
-        # ลองรีเฟรชถ้าไม่มีในแคช
+    if not school_data or is_cache_expired(school_code):
+        # ลองรีเฟรชถ้าไม่มีในแคชหรือหมดอายุ
         success = await refresh_school_cache(school_code)
         if not success:
             return {"status": "error", "message": f"School {school_code} not found"}

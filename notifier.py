@@ -28,7 +28,9 @@ def send_line_attendance_notification(user_info, status, time_str, line_config, 
             name = f"{title}{fname} {lname}".strip() or "ไม่ระบุชื่อ"
             
         display_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('displayId', '-')
-        grade = user_info.get('classLevel') or user_info.get('grade') or user_info.get('homeroomGrade') or "-"
+        class_level = user_info.get('classLevel') or user_info.get('grade') or user_info.get('homeroomGrade') or "-"
+        room = user_info.get('room', '')
+        grade = f"{class_level}/{room}" if room else class_level
         raw_profile = user_info.get('profileImageUrl', '')
         # LINE ต้องการ HTTPS URL ที่เข้าถึงได้สาธารณะ
         if raw_profile and raw_profile.startswith('https://'):

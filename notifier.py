@@ -2,8 +2,9 @@ import requests
 import json
 import urllib.parse
 import traceback
+import semester_summary
 
-def send_line_attendance_notification(user_info, status, time_str, line_config):
+def send_line_attendance_notification(user_info, status, time_str, line_config, school_id=None):
     """
     ส่งแจ้งเตือน LINE OA Flex Message (เลียนแบบดีไซน์ Dashboard Premium 100%)
     """
@@ -28,13 +29,40 @@ def send_line_attendance_notification(user_info, status, time_str, line_config):
             
         display_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('displayId', '-')
         grade = user_info.get('classLevel') or user_info.get('grade') or user_info.get('homeroomGrade') or "-"
-        profile_url = user_info.get('profileImageUrl') or "https://ui-avatars.com/api/?name=User&background=random"
+        raw_profile = user_info.get('profileImageUrl', '')
+        # LINE ต้องการ HTTPS URL ที่เข้าถึงได้สาธารณะ
+        if raw_profile and raw_profile.startswith('https://'):
+            profile_url = raw_profile
+        else:
+            # Fallback: สร้าง avatar จากชื่อ
+            safe_name = urllib.parse.quote(name)
+            profile_url = f"https://ui-avatars.com/api/?name={safe_name}&background=0D8ABC&color=fff&size=200"
         parent_ids = user_info.get('parentLineUserIds', [])
 
-        # 2. เตรียมข้อมูลสถิติและคะแนน
-        stats = user_info.get('attendanceStats', {'present': 0, 'late': 0, 'leave': 0, 'absent': 0})
+        # 2. ดึงข้อมูลสรุปภาคเรียนจาก Semestersummary (ข้อมูลจริงจาก Firebase)
+        stats = {'present': 0, 'late': 0, 'leave': 0, 'absent': 0, 'noCheckout': 0, 'officialTravel': 0}
+        try:
+            student_doc_id = user_info.get('id', '')
+            if student_doc_id and school_id:
+                _, _, sem_key = semester_summary.get_current_semester_key()
+                sem_data = semester_summary.fetch_semester_summary(school_id, student_doc_id, sem_key)
+                if sem_data:
+                    stats = {
+                        'present': sem_data.get('present', 0),
+                        'late': sem_data.get('late', 0),
+                        'leave': sem_data.get('leave', 0),
+                        'absent': sem_data.get('absent', 0),
+                        'noCheckout': sem_data.get('noCheckout', 0),
+                        'officialTravel': sem_data.get('officialTravel', 0)
+                    }
+                    print(f"📊 Semester stats for {name}: {stats}", flush=True)
+                else:
+                    print(f"⚠️ No Semestersummary found for {student_doc_id} (key: {sem_key})", flush=True)
+        except Exception as e:
+            print(f"⚠️ Error fetching semester summary for LINE: {e}", flush=True)
+
         score = user_info.get('behaviorScore', 100)
-        total_days = stats.get('present', 0) + stats.get('late', 0) + stats.get('absent', 0) + stats.get('leave', 0)
+        total_days = stats.get('present', 0) + stats.get('late', 0) + stats.get('absent', 0) + stats.get('leave', 0) + stats.get('noCheckout', 0) + stats.get('officialTravel', 0)
 
         # 3. สร้างกราฟวงกลม (Donut Chart) ผ่าน QuickChart.io
         chart_config = {
@@ -127,7 +155,9 @@ def send_line_attendance_notification(user_info, status, time_str, line_config):
                                             {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🟢", "size": "xs", "flex": 0}, {"type": "text", "text": "มาเรียน", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('present', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]},
                                             {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🟡", "size": "xs", "flex": 0}, {"type": "text", "text": "สาย", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('late', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]},
                                             {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🔴", "size": "xs", "flex": 0}, {"type": "text", "text": "ขาด", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('absent', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]},
-                                            {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🔵", "size": "xs", "flex": 0}, {"type": "text", "text": "ลา", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('leave', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]}
+                                            {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🔵", "size": "xs", "flex": 0}, {"type": "text", "text": "ลา", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('leave', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]},
+                                            {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🟠", "size": "xs", "flex": 0}, {"type": "text", "text": "ไม่ลงเวลาออก", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('noCheckout', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]},
+                                            {"type": "box", "layout": "horizontal", "contents": [{"type": "text", "text": "🟣", "size": "xs", "flex": 0}, {"type": "text", "text": "ไปราชการ", "size": "sm", "color": "#666666", "margin": "md", "flex": 4}, {"type": "text", "text": str(stats.get('officialTravel', 0)), "size": "sm", "weight": "bold", "align": "end", "flex": 2}]}
                                         ]
                                     },
                                     {

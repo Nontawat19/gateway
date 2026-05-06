@@ -549,7 +549,7 @@ def process_attendance_hub(school_id, user_info, dt, action_type, status):
             
             if line_config:
                 time_str = dt.strftime("%H:%M")
-                notifier.send_line_attendance_notification(user_info, status, time_str, line_config)
+                notifier.send_line_attendance_notification(user_info, status, time_str, line_config, school_id=school_id)
             else:
                 print(f"⚠️ NO LINE CONFIG FOUND: User: {name_for_log}, Class: {class_id}", flush=True)
                 

@@ -419,15 +419,19 @@ async def handle_attendance(school_code: str, request: Request, background_tasks
         return {"status": "ignored", "message": "Outside windows"}
 
     # 5. เช็คซ้ำใน SQLite
+    print(f"🧐 Checking for duplicate scan: {user_id} on {today} ({action_type})", flush=True)
     if db_local.check_existing_record(user_id, today, action_type):
+        print(f"⏭️ DUPLICATE IGNORED: {user_id}", flush=True)
         return {"skipped": "ignored", "message": "Duplicate scan ignored"}
 
     # 6. ส่งเข้าคิวประมวลผลเบื้องหลัง
+    print(f"📨 Queueing background task for: {user_id}", flush=True)
     background_tasks.add_task(process_attendance_hub, school_id, user_info, now, action_type, status)
     
     return {"status": "processing", "user_id": user_id, "school": school_code, "action": action_type}
 
 def process_attendance_hub(school_id, user_info, dt, action_type, status):
+    print(f"🚀 [BG] Task Started for {user_info.get('id', 'unknown')}", flush=True)
     try:
         # ดึง ID ให้ปลอดภัยขึ้น (กันพัง)
         user_id = user_info.get('studentId') or user_info.get('teacherId') or user_info.get('id', 'unknown')

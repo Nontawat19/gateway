@@ -5,6 +5,8 @@ import firebase_service as fb
 import database as db_local
 import logic
 import notifier
+import semester_summary
+import dashboard_template
 from datetime import datetime, timedelta
 import asyncio
 import json
@@ -286,6 +288,7 @@ async def get_config(request: Request):
                             </div>
                         </td>
                         <td class="text-end">
+                            <a href="/dashboard/${{s.code}}" class="btn btn-sm btn-outline-info me-1">📊 Dashboard</a>
                             <a href="/config/delete/${{s.code}}" class="btn btn-sm btn-outline-danger" onclick="return confirm('ลบโรงเรียนนี้?')">ลบ</a>
                         </td>
                     </tr>
@@ -482,6 +485,87 @@ def process_attendance_hub(school_id, user_info, dt, action_type, status):
         print(f"❌ BACKGROUND PROCESS ERROR: {e}", flush=True)
         traceback.print_exc()
         print("="*50, flush=True)
+
+# --- Semester Summary Dashboard ---
+
+@app.get("/dashboard/{school_code}", response_class=HTMLResponse)
+async def semester_dashboard(school_code: str, request: Request):
+    """หน้า Dashboard สรุปภาคเรียน พร้อม Chart.js"""
+    school_data = SCHOOL_CACHE.get(school_code)
+    if not school_data:
+        success = await refresh_school_cache(school_code)
+        if not success:
+            return HTMLResponse(content="<h1>ไม่พบโรงเรียนนี้</h1>", status_code=404)
+        school_data = SCHOOL_CACHE[school_code]
+
+    school_id = school_data["id"]
+    school_name = school_data["name"]
+    class_levels = semester_summary.fetch_class_levels(school_id)
+
+    # อ่านค่า filter จาก query params
+    params = request.query_params
+    selected_class = params.get("class_level", class_levels[0] if class_levels else "")
+    selected_room = params.get("room", "")
+    selected_term = params.get("term", "")
+    selected_year = params.get("year", "")
+
+    # ถ้าไม่ได้ระบุ term/year ให้ใช้ค่าปัจจุบัน
+    if not selected_term or not selected_year:
+        ac_year, term, _ = semester_summary.get_current_semester_key()
+        if not selected_term:
+            selected_term = term
+        if not selected_year:
+            selected_year = ac_year
+
+    semester_key = f"{selected_year}-{selected_term}"
+    summary_data = None
+
+    if selected_class:
+        summary_data = semester_summary.fetch_class_semester_summary(
+            school_id, selected_class, selected_room, semester_key
+        )
+
+    return HTMLResponse(content=dashboard_template.render_dashboard(
+        school_name=school_name,
+        school_code=school_code,
+        class_levels=class_levels,
+        summary_data=summary_data,
+        selected_class=selected_class,
+        selected_room=selected_room,
+        selected_term=selected_term,
+        academic_year=selected_year
+    ))
+
+
+@app.get("/api/semester-summary/{school_code}")
+async def api_semester_summary(school_code: str, request: Request):
+    """API สำหรับดึงข้อมูลสรุปภาคเรียนเป็น JSON"""
+    school_data = SCHOOL_CACHE.get(school_code)
+    if not school_data:
+        success = await refresh_school_cache(school_code)
+        if not success:
+            return {"error": f"School {school_code} not found"}
+        school_data = SCHOOL_CACHE[school_code]
+
+    school_id = school_data["id"]
+    params = request.query_params
+    class_level = params.get("class_level", "")
+    room = params.get("room", "")
+    term = params.get("term", "")
+    year = params.get("year", "")
+
+    if not term or not year:
+        ac_year, t, _ = semester_summary.get_current_semester_key()
+        term = term or t
+        year = year or ac_year
+
+    if not class_level:
+        return {"error": "class_level is required"}
+
+    semester_key = f"{year}-{term}"
+    data = semester_summary.fetch_class_semester_summary(school_id, class_level, room, semester_key)
+    return serialize_firestore_data(data)
+
 
 @app.get("/", response_class=RedirectResponse)
 async def root_redirect():

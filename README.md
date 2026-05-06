@@ -34,10 +34,21 @@
 `FindFace -> Gateway (SQLite Check) -> Background Queue -> Firebase Cloud`
 
 ## 📁 รายละเอียดไฟล์
-* `app.py`: ตัวรับ Webhook, ระบบ Config UI และ Logic หลัก
+* `app.py`: ตัวรับ Webhook, ระบบ Config UI, Dashboard และ Logic หลัก
 * `database.py`: ฐานข้อมูล SQLite ท้องถิ่น (Persistent Cache)
 * `firebase_service.py`: การส่งข้อมูลและอัปเดตสถิติ Summary
 * `logic.py`: คำนวณช่วงเวลา (Windows) เข้า-ออก และสถานะมาสาย
+* `semester_summary.py`: ดึงข้อมูลสรุปภาคเรียนจาก Firebase โดยตรง
+* `dashboard_template.py`: สร้างหน้า Dashboard พร้อม Chart.js (Donut, Bar, Line)
+* `notifier.py`: ส่ง LINE OA Flex Message แจ้งเตือนผู้ปกครอง
+
+## 📊 Semester Summary Dashboard
+เข้าถึงได้ที่ `/dashboard/{school_code}` - ดึงข้อมูลจาก Firebase โดยตรง ไม่ผ่าน SQLite
+- **Donut Chart**: สัดส่วนสถานะรวม (มา/สาย/ลา/ขาด)
+- **Bar Chart**: สถิติรายบุคคล
+- **Line Chart**: ร้อยละการมาเรียนแต่ละคน (เทียบเกณฑ์ 80%)
+- **ตาราง**: สรุปรายบุคคลพร้อม Badge สถานะ
+- **API**: `GET /api/semester-summary/{school_code}?class_level=ป.1&room=1&term=1&year=2569`
 
 ---
 © 2026 BMG SoftTech - Attendance Intelligence System

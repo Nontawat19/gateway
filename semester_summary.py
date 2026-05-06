@@ -3,6 +3,8 @@
 ดึงข้อมูลสรุปการมาเรียนรายภาคเรียนจาก Firebase โดยตรง
 แสดงผลเป็น Dashboard พร้อม Chart.js
 """
+from __future__ import annotations
+
 import firebase_service as fb
 from logic import get_academic_year_and_term
 from datetime import datetime

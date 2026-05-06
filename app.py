@@ -25,7 +25,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # --- Configuration & Caching ---
 SCHOOLS_FILE = os.path.join(os.path.dirname(__file__), "schools_config.json")
-SCHOOL_CACHE = {} # { "school_code": { "id": "UID", "name": "Name", "config": {}, "expiry": datetime } }
+SCHOOL_CACHE = {} # { "school_code": { "id": "UID", "name": "Name", "config": {} } }
+LISTENER_UNSUBSCRIBE = {} # { "school_code": unsubscribe_function }
 
 def load_schools():
     if os.path.exists(SCHOOLS_FILE):
@@ -60,18 +61,51 @@ async def refresh_school_cache(school_code):
             "id": school_id,
             "name": school_name,
             "config": config,
-            "expiry": datetime.now() + timedelta(hours=6)
         }
-        print(f"🔄 Config refreshed for {school_code} ({school_name}) - next refresh at {SCHOOL_CACHE[school_code]['expiry'].strftime('%H:%M')}")
+        print(f"🔄 Config loaded for {school_code} ({school_name})")
         return True
     return False
 
-def is_cache_expired(school_code):
-    """ตรวจสอบว่า cache หมดอายุหรือยัง"""
-    school_data = SCHOOL_CACHE.get(school_code)
-    if not school_data:
-        return True
-    return datetime.now() > school_data.get("expiry", datetime.min)
+def attach_config_listener(school_code, school_id):
+    """
+    ผูก Firestore Realtime Listener กับ school-settings/{school_id}
+    เมื่อแอดมินเปลี่ยนค่าจากหน้าเว็บ → callback จะยิงทันที → อัปเดต cache อัตโนมัติ
+    """
+    # ถ้ามี listener เดิมอยู่ ให้ unsubscribe ก่อน
+    if school_code in LISTENER_UNSUBSCRIBE:
+        LISTENER_UNSUBSCRIBE[school_code]()
+
+    doc_ref = fb.db.collection("school-settings").document(school_id)
+
+    def on_snapshot(doc_snapshot, changes, read_time):
+        for doc in doc_snapshot:
+            data = doc.to_dict()
+            new_config = data.get("attendanceConfig", {})
+            new_config['lineSettings'] = data.get('lineSettings', {})
+
+            # อัปเดต cache ทันที
+            if school_code in SCHOOL_CACHE:
+                old_config = SCHOOL_CACHE[school_code].get("config", {})
+                SCHOOL_CACHE[school_code]["config"] = new_config
+
+                # แสดง log เฉพาะเมื่อค่าเปลี่ยนจริง
+                if old_config != new_config:
+                    print(f"⚡ [REALTIME] Config updated for {school_code}!")
+                    print(f"   📌 studentLateTime: {new_config.get('studentLateTime', '-')}")
+                    print(f"   📌 studentCheckinStart: {new_config.get('studentCheckinStart', '-')} ~ {new_config.get('studentCheckinEnd', '-')}")
+                    print(f"   📌 studentCheckoutStart: {new_config.get('studentCheckoutStart', '-')} ~ {new_config.get('studentCheckoutEnd', '-')}")
+            else:
+                school_name = data.get("schoolName") or data.get("name") or "ไม่ระบุ"
+                SCHOOL_CACHE[school_code] = {
+                    "id": school_id,
+                    "name": school_name,
+                    "config": new_config,
+                }
+                print(f"⚡ [REALTIME] Initial config loaded for {school_code}")
+
+    unsubscribe = doc_ref.on_snapshot(on_snapshot)
+    LISTENER_UNSUBSCRIBE[school_code] = unsubscribe
+    print(f"👂 Listening for config changes on {school_code} (school_id: {school_id})")
 
 # --- Background Tasks ---
 
@@ -108,17 +142,6 @@ async def midnight_cleanup_loop():
         
         await asyncio.sleep(3600)
 
-async def config_refresh_loop():
-    """รีเฟรช Config จาก Firebase ทุกๆ 6 ชั่วโมง เพื่อให้ค่าเวลาที่แอดมินเปลี่ยนถูกอัปเดตอัตโนมัติ"""
-    while True:
-        await asyncio.sleep(21600)  # 6 ชั่วโมง
-        try:
-            schools = load_schools()
-            for code in schools:
-                await refresh_school_cache(code)
-            print(f"✅ Auto-refreshed config for {len(schools)} schools at {datetime.now().strftime('%H:%M')}")
-        except Exception as e:
-            print(f"❌ Config Refresh Loop Error: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -130,10 +153,13 @@ async def startup_event():
     schools = load_schools()
     for code in schools:
         await refresh_school_cache(code)
+        # ผูก Realtime Listener สำหรับแต่ละโรงเรียน
+        school_data = SCHOOL_CACHE.get(code)
+        if school_data:
+            attach_config_listener(code, school_data["id"])
         
     asyncio.create_task(retry_loop())
     asyncio.create_task(midnight_cleanup_loop())
-    asyncio.create_task(config_refresh_loop())
 
 def serialize_firestore_data(data):
     """แปลงข้อมูลพิเศษจาก Firestore (เช่น Timestamp) ให้เป็นข้อมูลพื้นฐานที่ JSON รองรับ"""
@@ -373,13 +399,13 @@ async def add_school(school_code: str = Form(...)):
     if school_code not in schools:
         schools[school_code] = {"added_at": str(datetime.now())}
         save_schools(schools)
-        # โหลดเข้า Cache ทันที
+        # โหลดเข้า Cache + ผูก Listener ทันที
         SCHOOL_CACHE[school_code] = {
             "id": school_id,
             "name": school_name,
             "config": fb.fetch_school_config(school_id),
-            "expiry": datetime.now() + timedelta(days=30)
         }
+        attach_config_listener(school_code, school_id)
         return RedirectResponse(url="/config?msg=เพิ่มโรงเรียนสำเร็จ", status_code=303)
     
     return RedirectResponse(url="/config?msg=โรงเรียนนี้ถูกเพิ่มไว้แล้ว", status_code=303)
@@ -390,6 +416,10 @@ async def delete_school(school_code: str):
     if school_code in schools:
         del schools[school_code]
         save_schools(schools)
+        # ยกเลิก listener และลบ cache
+        if school_code in LISTENER_UNSUBSCRIBE:
+            LISTENER_UNSUBSCRIBE[school_code]()
+            del LISTENER_UNSUBSCRIBE[school_code]
         if school_code in SCHOOL_CACHE:
             del SCHOOL_CACHE[school_code]
         return RedirectResponse(url="/config?msg=ลบโรงเรียนเรียบร้อยแล้ว", status_code=303)
@@ -421,14 +451,14 @@ async def refresh_school_config_endpoint(school_code: str):
 
 @app.post("/webhook/attendance/{school_code}")
 async def handle_attendance(school_code: str, request: Request, background_tasks: BackgroundTasks):
-    # 1. ตรวจสอบโรงเรียน + เช็ค cache หมดอายุ
+    # 1. ตรวจสอบโรงเรียน (cache อัปเดตอัตโนมัติผ่าน Realtime Listener)
     school_data = SCHOOL_CACHE.get(school_code)
-    if not school_data or is_cache_expired(school_code):
-        # ลองรีเฟรชถ้าไม่มีในแคชหรือหมดอายุ
+    if not school_data:
         success = await refresh_school_cache(school_code)
         if not success:
             return {"status": "error", "message": f"School {school_code} not found"}
         school_data = SCHOOL_CACHE[school_code]
+        attach_config_listener(school_code, school_data["id"])
 
     data = await request.json()
     now = datetime.now()
